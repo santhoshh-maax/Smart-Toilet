@@ -1,13 +1,13 @@
-#define BUTTON 4
+#define BUTTON 13
 
 bool state = false;
-bool lastState = HIGH; // for input_pull
+bool lastState = HIGH;
 
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
 
 void setup(){
-  Serial.begin(9600);
+  Serial.begin(115200);
   pinMode(BUTTON, INPUT_PULLUP);
 }
 
@@ -20,6 +20,7 @@ void loop(){
 
       Serial.print("State: ");
       Serial.println(state ? "ON" : "OFF");
+
       lastDebounceTime = millis();
     }
   }

@@ -1,5 +1,5 @@
-#define TRI 12
-#define ECHO 13
+#define TRI 32
+#define ECHO 33
 void setup() {
   Serial.begin(9600);
   pinMode(TRI, OUTPUT);

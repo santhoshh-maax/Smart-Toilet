@@ -8,7 +8,7 @@ void loop(){
   int value = analogRead(MQ2_PIN);
 
   Serial.println("Gas Value: ");
-  Serial.print(value);
+  Serial.println(value);
 
   delay(1000);
 

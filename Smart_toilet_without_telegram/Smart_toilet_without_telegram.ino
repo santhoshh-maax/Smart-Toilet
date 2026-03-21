@@ -6,25 +6,25 @@
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ---------------- PINS ----------------
-#define PIR_PIN        14
-#define TRIG_PIN       12
-#define ECHO_PIN       13
-#define DHT_PIN        27
-#define MQ2_PIN        34
+#define PIR_PIN 14
+#define TRIG_PIN 12
+#define ECHO_PIN 13
+#define DHT_PIN 27
+#define MQ2_PIN 34
 
-#define RELAY_FLUSH    26
-#define RELAY_HUMID    25
+#define RELAY_FLUSH 26
+#define RELAY_HUMID 25
 
-#define LED_GREEN      2
-#define LED_YELLOW     15
-#define LED_RED        33
+#define LED_GREEN 2
+#define LED_YELLOW 15
+#define LED_RED 33
+#define TOILET_LIGHT 18
 
-#define BUZZER         32
+#define BUZZER 32
 #define COMPLAINT_BUTTON 5
 
 // ---------------- SENSORS ----------------
-#define DHT_TYPE DHT11
-DHT dht(DHT_PIN, DHT_TYPE);
+DHT dht(DHT_PIN, DHT11);
 
 // ---------------- VARIABLES ----------------
 bool isOccupied = false;
@@ -34,10 +34,22 @@ int complaintCount = 0;
 #define DIST_THRESHOLD 100
 #define HUMIDITY_THRESHOLD 75
 #define GAS_THRESHOLD 2000
-#define CLEAN_THRESHOLD 10
 
-unsigned long lastButtonPress = 0;
-const int debounceDelay = 300;
+unsigned long lastMotionTime = 0;
+const unsigned long lightTimeout = 20000;
+
+bool lastComplaintState = HIGH;
+unsigned long lastComplaintDebounce = 0;
+const int debounceDelay = 50;
+
+bool gasAlert = false;
+
+// Non-blocking timers
+unsigned long flushTimer = 0;
+bool flushing = false;
+
+unsigned long lcdTimer = 0;
+bool showTempMessage = false;
 
 // ---------------- SETUP ----------------
 void setup() {
@@ -46,7 +58,6 @@ void setup() {
   pinMode(PIR_PIN, INPUT);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  pinMode(MQ2_PIN, INPUT);
 
   pinMode(RELAY_FLUSH, OUTPUT);
   pinMode(RELAY_HUMID, OUTPUT);
@@ -54,19 +65,18 @@ void setup() {
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_YELLOW, OUTPUT);
   pinMode(LED_RED, OUTPUT);
+  pinMode(TOILET_LIGHT, OUTPUT);
 
   pinMode(BUZZER, OUTPUT);
   pinMode(COMPLAINT_BUTTON, INPUT_PULLUP);
 
   dht.begin();
 
-  lcd.init();
+  lcd.begin();
   lcd.backlight();
 
   lcd.setCursor(0, 0);
   lcd.print("Smart Toilet");
-  delay(2000);
-  lcd.clear();
 
   setLEDState("FREE");
 }
@@ -79,70 +89,85 @@ void loop() {
   float humidity = dht.readHumidity();
   int gasValue = analogRead(MQ2_PIN);
 
-  // ENTRY
+  unsigned long currentMillis = millis();
+
+  // -------- SMART LIGHT --------
+  if (pirState == HIGH) {
+    lastMotionTime = currentMillis;
+  }
+
+  if (currentMillis - lastMotionTime < lightTimeout) {
+    digitalWrite(TOILET_LIGHT, HIGH);
+  } else {
+    digitalWrite(TOILET_LIGHT, LOW);
+  }
+
+  // -------- ENTRY --------
   if (pirState == HIGH && distance < DIST_THRESHOLD && !isOccupied) {
-
     setLEDState("ENTERING");
-    delay(2000);
 
-    if (getDistance() < DIST_THRESHOLD) {
-      setLEDState("OCCUPIED");
-      isOccupied = true;
+    isOccupied = true;
+    flushing = true;
+    flushTimer = currentMillis;
+  }
 
-      // Pre-flush
-      digitalWrite(RELAY_FLUSH, HIGH);
-      delay(2000);
+  // -------- FLUSH CONTROL --------
+  if (flushing) {
+    if (currentMillis - flushTimer < 2000) {
       digitalWrite(RELAY_FLUSH, LOW);
+    } else {
+      digitalWrite(RELAY_FLUSH, HIGH);
+      flushing = false;
+      setLEDState("OCCUPIED");
     }
   }
 
-  // EXIT
+  // -------- EXIT --------
   if (isOccupied && distance > DIST_THRESHOLD) {
+    isOccupied = false;
+    userCount++;
 
     setLEDState("FREE");
-    isOccupied = false;
 
-    // Post-flush
-    digitalWrite(RELAY_FLUSH, HIGH);
-    delay(3000);
-    digitalWrite(RELAY_FLUSH, LOW);
-
-    userCount++;
-    Serial.println("User Count: " + String(userCount));
+    flushing = true;
+    flushTimer = currentMillis;
   }
 
-  // HUMIDITY CONTROL
+  // -------- HUMIDITY --------
   if (humidity > HUMIDITY_THRESHOLD) {
-    digitalWrite(RELAY_HUMID, HIGH);
-    displayBadAir();
-  } else {
     digitalWrite(RELAY_HUMID, LOW);
+    displayOnce("Bad Air!");
+  } else {
+    digitalWrite(RELAY_HUMID, HIGH);
   }
 
-  // SMOKE DETECTION
-  if (gasValue > GAS_THRESHOLD) {
+  // -------- GAS --------
+  if (gasValue > GAS_THRESHOLD && !gasAlert) {
+    gasAlert = true;
+
     digitalWrite(BUZZER, HIGH);
-    displaySmoke();
-    Serial.println("SMOKE DETECTED!");
-    delay(2000);
+    displayOnce("SMOKE ALERT!");
+  }
+
+  if (gasValue < GAS_THRESHOLD - 200) {
+    gasAlert = false;
     digitalWrite(BUZZER, LOW);
   }
 
-  // COMPLAINT BUTTON
-  checkComplaintButton();
+  // -------- BUTTON --------
+  checkComplaintButton(currentMillis);
 
-  // MAINTENANCE ALERT
-  if (userCount >= CLEAN_THRESHOLD) {
-    Serial.println("Cleaning Required!");
-    userCount = 0;
+  // -------- LCD RETURN --------
+  if (showTempMessage && currentMillis - lcdTimer > 2000) {
+    showTempMessage = false;
+
+    if (isOccupied) setLEDState("OCCUPIED");
+    else setLEDState("FREE");
   }
-
-  delay(500);
 }
 
 // ---------------- FUNCTIONS ----------------
 
-// Ultrasonic
 long getDistance() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -154,62 +179,55 @@ long getDistance() {
   return duration * 0.034 / 2;
 }
 
-// LED + LCD
 void setLEDState(String state) {
 
   digitalWrite(LED_GREEN, LOW);
   digitalWrite(LED_YELLOW, LOW);
   digitalWrite(LED_RED, LOW);
 
-  lcd.clear();
-
   if (state == "FREE") {
     digitalWrite(LED_GREEN, HIGH);
-    lcd.print("Status: FREE");
+    lcd.setCursor(0, 0);
+    lcd.print("Status: FREE   ");
   }
   else if (state == "ENTERING") {
     digitalWrite(LED_YELLOW, HIGH);
-    lcd.print("User Detected");
+    lcd.setCursor(0, 0);
+    lcd.print("User Detected  ");
   }
   else if (state == "OCCUPIED") {
     digitalWrite(LED_RED, HIGH);
-    lcd.print("Status: BUSY");
+    lcd.setCursor(0, 0);
+    lcd.print("Status: BUSY   ");
   }
 }
 
-// LCD Messages
-void displayBadAir() {
+void displayOnce(String msg) {
   lcd.clear();
-  lcd.print("Bad Air!");
+  lcd.print(msg);
+
+  showTempMessage = true;
+  lcdTimer = millis();
 }
 
-void displaySmoke() {
-  lcd.clear();
-  lcd.print("SMOKE ALERT!");
-}
+void checkComplaintButton(unsigned long currentMillis) {
 
-// Complaint Button
-void checkComplaintButton() {
-  if (digitalRead(COMPLAINT_BUTTON) == LOW) {
-    if (millis() - lastButtonPress > debounceDelay) {
+  int reading = digitalRead(COMPLAINT_BUTTON);
+
+  if (reading == LOW && lastComplaintState == HIGH) {
+
+    if (currentMillis - lastComplaintDebounce > debounceDelay) {
 
       complaintCount++;
-      lastButtonPress = millis();
+      lastComplaintDebounce = currentMillis;
 
       Serial.println("Complaint Registered!");
 
       digitalWrite(BUZZER, HIGH);
+      displayOnce("Complaint Sent");
 
-      for (int i = 0; i < 3; i++) {
-        digitalWrite(LED_RED, HIGH);
-        delay(300);
-        digitalWrite(LED_RED, LOW);
-        delay(300);
-      }
-
-      digitalWrite(BUZZER, LOW);
-
-      displayBadAir();
     }
   }
+
+  lastComplaintState = reading;
 }

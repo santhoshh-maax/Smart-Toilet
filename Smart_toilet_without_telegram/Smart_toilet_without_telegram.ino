@@ -29,7 +29,7 @@ int complaintCount = 0;
 
 #define DIST_THRESHOLD 25
 #define HUMIDITY_THRESHOLD 70
-#define GAS_THRESHOLD 2000
+#define GAS_THRESHOLD 800
 
 unsigned long lastMotionTime = 0;
 const unsigned long lightTimeout = 10000;

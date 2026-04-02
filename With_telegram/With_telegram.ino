@@ -25,10 +25,10 @@ int userCount = 0;
 int complaintCount = 0;
 #define DIST_THRESHOLD 25
 #define HUMIDITY_THRESHOLD 70
-#define GAS_THRESHOLD 2000
+#define GAS_THRESHOLD 800
 //------------- Wifi for Telegram ----------
-const char* ssid = "Prem bsnl 2g";
-const char* password = "prem@2025";
+const char* ssid = "ss";
+const char* password = "sara225__";
 #define BOT_TOKEN "8676205907:AAEUIGXnacfjSNlCTeHPUboI2_8woVeKQn4"
 #define CHAT_ID "6548287695"
 WiFiClientSecure client;
@@ -40,6 +40,9 @@ unsigned long lastDebugTime = 0;
 const unsigned long debugInterval = 2000;
 unsigned long lastStateChange = 0;
 const int stateDelay = 3000; // 3 sec lock
+//telegram call
+unsigned long lastTelegramCheck = 0;
+const int telegramInterval = 1000; // 1 second
 // Button
 bool lastComplaintState = HIGH;
 unsigned long lastComplaintDebounce = 0;
@@ -67,7 +70,17 @@ String lastStatus = "";
 // ---------------- SETUP ----------------
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(ssid, password);
+  pinMode(PIR_PIN, INPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(RELAY_FLUSH, OUTPUT);
+  digitalWrite(RELAY_FLUSH, HIGH);   // 🔥 OFF
+  pinMode(RELAY_HUMID, OUTPUT);
+  digitalWrite(RELAY_HUMID, HIGH);   // 🔥 OFF
+  pinMode(TOILET_LIGHT, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(COMPLAINT_BUTTON, INPUT_PULLUP);
+    WiFi.begin(ssid, password);
   Serial.print("Connecting");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -76,14 +89,6 @@ void setup() {
   Serial.println("\nWiFi Connected");
   client.setInsecure();
   bot.sendMessage(CHAT_ID, "🚽 Smart Toilet Online!", "");
-  pinMode(PIR_PIN, INPUT);
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-  pinMode(RELAY_FLUSH, OUTPUT);
-  pinMode(RELAY_HUMID, OUTPUT);
-  pinMode(TOILET_LIGHT, OUTPUT);
-  pinMode(BUZZER, OUTPUT);
-  pinMode(COMPLAINT_BUTTON, INPUT_PULLUP);
   dht.begin();
   lcd.begin();
   lcd.backlight();
@@ -96,7 +101,7 @@ void setup() {
 }
 // ---------------- LOOP ----------------
 void loop() {
-  handleTelegram();
+
   unsigned long currentMillis = millis();
   int pirState = digitalRead(PIR_PIN);
   float humidity = dht.readHumidity();
@@ -183,6 +188,10 @@ if (autoMode && gasValue < GAS_THRESHOLD - 200) {
 }
 // -------- BUTTON --------
   checkComplaintButton(currentMillis);
+    if (millis() - lastTelegramCheck > telegramInterval) {
+  handleTelegram();
+  lastTelegramCheck = millis();
+}
 // -------- LCD RETURN --------
   String currentStatus = isOccupied ? "Status: BUSY    " : "Status: FREE    ";
 if (showTempMessage) {

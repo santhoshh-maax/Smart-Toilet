@@ -12,8 +12,8 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 #define ECHO_PIN 13
 #define DHT_PIN 27
 #define MQ2_PIN 34
-#define RELAY_FLUSH 26
-#define RELAY_HUMID 25
+#define RELAY_FLUSH 26  // orange color relay IN wire
+#define RELAY_HUMID 25 // Yellow color relay IN wire
 #define TOILET_LIGHT 18
 #define BUZZER 32
 #define COMPLAINT_BUTTON 5
@@ -24,7 +24,7 @@ bool isOccupied = false;
 int userCount = 0;
 int complaintCount = 0;
 #define DIST_THRESHOLD 25
-#define HUMIDITY_THRESHOLD 70
+#define HUMIDITY_THRESHOLD 50
 #define GAS_THRESHOLD 800
 //------------- Wifi for Telegram ----------
 const char* ssid = "ss";
@@ -35,6 +35,7 @@ WiFiClientSecure client;
 UniversalTelegramBot bot(BOT_TOKEN, client);
 unsigned long lastMotionTime = 0;
 const unsigned long lightTimeout = 10000;
+unsigned long lastModeChangeTime = 0;
 // Debug
 unsigned long lastDebugTime = 0;
 const unsigned long debugInterval = 2000;
@@ -46,9 +47,12 @@ const int telegramInterval = 1000; // 1 second
 // Button
 bool lastComplaintState = HIGH;
 unsigned long lastComplaintDebounce = 0;
-const int debounceDelay = 50;
+const int debounceDelay = 150;
+unsigned long lastSystemEventTime = 0;
 bool firstRun = true;
 // -------- TELEGRAM CONTROL --------
+bool sendAutoMsg = false;
+bool sendSmokeMsg = false;
 bool manualHumid = false;
 bool manualLight = false;
 bool manualBuzzer = false;
@@ -80,31 +84,81 @@ void setup() {
   pinMode(TOILET_LIGHT, OUTPUT);
   pinMode(BUZZER, OUTPUT);
   pinMode(COMPLAINT_BUTTON, INPUT_PULLUP);
-    WiFi.begin(ssid, password);
-  Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+   WiFi.begin(ssid, password);
+
+// -------- LCD INIT (moved earlier) --------
+lcd.begin();
+lcd.backlight();
+
+// -------- SHOW CONNECTING --------
+lcd.setCursor(0, 0);
+lcd.print("Connecting WiFi");
+
+Serial.print("Connecting");
+
+int dotCount = 0;
+
+while (WiFi.status() != WL_CONNECTED) {
+  delay(500);
+  Serial.print(".");
+
+  // LCD dots animation
+  lcd.setCursor(dotCount, 1);
+  lcd.print(".");
+  dotCount++;
+
+  if (dotCount > 15) {
+    lcd.setCursor(0, 1);
+    lcd.print("                ");
+    dotCount = 0;
   }
-  Serial.println("\nWiFi Connected");
-  client.setInsecure();
-  bot.sendMessage(CHAT_ID, "🚽 Smart Toilet Online!", "");
-  dht.begin();
-  lcd.begin();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Smart Toilet");
-  delay(2000);
-  lcd.clear();
-  delay(1000); // stabilize button
-  
+}
+
+// -------- WIFI CONNECTED --------
+Serial.println("\nWiFi Connected");
+
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("WiFi Connected");
+lcd.setCursor(0, 1);
+lcd.print("Ready...");
+delay(2000);
+lcd.clear();
+
+// -------- TELEGRAM --------
+client.setInsecure();
+client.setTimeout(1000);   // 1 second max wait
+bot.sendMessage(CHAT_ID, "🚽 Smart Toilet Online!", "");
+
+// -------- SENSOR --------
+dht.begin();
+
+// -------- START SCREEN --------
+lcd.setCursor(0, 0);
+lcd.print("Smart Toilet");
+delay(2000);
+lcd.clear();
+
+delay(1000); // stabilize button
 }
 // ---------------- LOOP ----------------
 void loop() {
 
   unsigned long currentMillis = millis();
+    // 🔥 WIFI AUTO-RECONNECT (ADD HERE)
+static unsigned long lastReconnectAttempt = 0;
+
+if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectAttempt > 5000) {
+  Serial.println("WiFi lost! Reconnecting...");
+  WiFi.begin(ssid, password);
+  lastReconnectAttempt = millis();
+}
+
   int pirState = digitalRead(PIR_PIN);
   float humidity = dht.readHumidity();
+  if (isnan(humidity)) {
+  humidity = 0;
+}
   int gasValue = analogRead(MQ2_PIN);
   // -------- ULTRASONIC (STABLE) --------
   if (currentMillis - lastUltraTime > 100) {
@@ -129,28 +183,39 @@ void loop() {
     && currentMillis - lastStateChange > stateDelay) { 
     Serial.println(">>> ENTRY DETECTED <<<");
     isOccupied = true;
-    flushing = true;
-    flushTimer = currentMillis;
+    
+      flushing = true;
+      flushTimer = currentMillis;
+
     lastStateChange = currentMillis;
+    lastSystemEventTime = currentMillis;
   }
   // -------- FLUSH --------
-  if (autoMode && !manualFlush && flushing) {
-    if (currentMillis - flushTimer < 3000) {
-      digitalWrite(RELAY_FLUSH, LOW);
+ if (autoMode && !manualFlush) {
+
+  if (flushing) {
+    if (currentMillis - flushTimer < 2000) {
+      digitalWrite(RELAY_FLUSH, LOW);   // ON
     } else {
-      digitalWrite(RELAY_FLUSH, HIGH);
+      digitalWrite(RELAY_FLUSH, HIGH);  // OFF
       flushing = false;
     }
+  } else {
+    digitalWrite(RELAY_FLUSH, HIGH);    // always ensure OFF
   }
+}
   // -------- EXIT --------
  if (autoMode && isOccupied && distance > DIST_THRESHOLD && distance > 0 
     && currentMillis - lastStateChange > stateDelay) { 
     isOccupied = false;
     userCount++;
     Serial.println(">>> EXIT DETECTED <<<");
-    flushing = true;
-    flushTimer = currentMillis;
+
+  flushing = true;
+  flushTimer = currentMillis;
+
     lastStateChange = currentMillis;
+    lastSystemEventTime = currentMillis;
   }
   // -------- HUMIDITY --------
   if (autoMode) {
@@ -162,7 +227,6 @@ void loop() {
   }
 }
   // -------- GAS --------
-  // -------- GAS --------
 if (autoMode && !manualBuzzer && gasValue > GAS_THRESHOLD && !gasAlert) {
 
   gasAlert = true;
@@ -171,39 +235,60 @@ if (autoMode && !manualBuzzer && gasValue > GAS_THRESHOLD && !gasAlert) {
 
   if (!showTempMessage) displayOnce("SMOKE ALERT!");
 
-  // 🔥 TELEGRAM ALERT (ONLY ONCE)
   if (!smokeNotified) {
-    bot.sendMessage(CHAT_ID, "🚬 Smoke detected in toilet!", "");
-    smokeNotified = true;
-  }
+  sendSmokeMsg = true;   // 🔥 set flag only
+  smokeNotified = true;
+}
 }
 
 // -------- RESET --------
-if (autoMode && gasValue < GAS_THRESHOLD - 200) {
+if (autoMode && gasValue < GAS_THRESHOLD) {
 
   gasAlert = false;
   digitalWrite(BUZZER, LOW);
 
-  smokeNotified = false;   // allow next alert
+  smokeNotified = false;
 }
 // -------- BUTTON --------
   checkComplaintButton(currentMillis);
-    if (millis() - lastTelegramCheck > telegramInterval) {
-  handleTelegram();
+if (millis() - lastTelegramCheck > telegramInterval) {
+
+  if (WiFi.status() == WL_CONNECTED) {
+    handleTelegram();
+  }
+
   lastTelegramCheck = millis();
+}
+
+//----------TELEGRAM MESSAGE NO_BLOCKING
+static unsigned long lastMsgTime = 0;
+if (sendAutoMsg && millis() - lastMsgTime > 1000) {
+  bot.sendMessage(CHAT_ID, "AUTO mode enabled", "");
+  sendAutoMsg = false;
+  lastMsgTime = millis();
+}
+static unsigned long lastSmokeMsgTime = 0;
+
+if (sendSmokeMsg && millis() - lastSmokeMsgTime > 1000) {
+  bot.sendMessage(CHAT_ID, "🚬 Smoke detected in toilet!", "");
+  sendSmokeMsg = false;
+  lastSmokeMsgTime = millis();
 }
 // -------- LCD RETURN --------
   String currentStatus = isOccupied ? "Status: BUSY    " : "Status: FREE    ";
 if (showTempMessage) {
   if (currentMillis - lcdTimer > 3000) {
     showTempMessage = false;
-    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("                ");  // clear line
     lcd.setCursor(0, 0);
     lcd.print(currentStatus);
+
     lastStatus = currentStatus;
   }
 } else {
-  if (currentStatus != lastStatus) {
+if (!showTempMessage && currentStatus != lastStatus) {
     lcd.setCursor(0, 0);
     lcd.print(currentStatus);
     lastStatus = currentStatus;
@@ -226,35 +311,54 @@ long getDistance() {
 void displayOnce(String msg) {
   showTempMessage = true;
   lcdTimer = millis();
-  lcd.clear();
+
   lcd.setCursor(0, 0);
-  lcd.print(msg);   // ONLY message
+  lcd.print("                "); // clear line safely
+  lcd.setCursor(0, 0);
+  lcd.print(msg);
 }
+
 void checkComplaintButton(unsigned long currentMillis) {
+
+  if (currentMillis - lastModeChangeTime < 1000) return;
+  if (currentMillis - lastSystemEventTime < 1500) return;
+
   if (firstRun) {
     lastComplaintState = digitalRead(COMPLAINT_BUTTON);
     firstRun = false;
     return;
   }
+
   int reading = digitalRead(COMPLAINT_BUTTON);
+
   if (reading == LOW && lastComplaintState == HIGH) {
+
     if (currentMillis - lastComplaintDebounce > debounceDelay) {
+
       complaintCount++;
       lastComplaintDebounce = currentMillis;
+
       Serial.println("Complaint Registered!");
       displayOnce("Complaint Sent");
+
       digitalWrite(BUZZER, HIGH);
-      delay(200);
+      delay(100);
       digitalWrite(BUZZER, LOW);
+
       Serial.print("Total Complaints: ");
       Serial.println(complaintCount);
     }
   }
-lastComplaintState = reading;
+
+  lastComplaintState = reading;
 }
 // ------------Telagram function -------------
 void handleTelegram() {
-  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  int numNewMessages = 0;
+
+if (WiFi.status() == WL_CONNECTED) {
+  numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+}
   while (numNewMessages) {
     for (int i = 0; i < numNewMessages; i++) {
       String text = bot.messages[i].text;
@@ -266,13 +370,23 @@ void handleTelegram() {
       }
       // -------- AUTO MODE --------
       else if (text == "/auto") {
-        autoMode = true;
-        manualFlush = false;
-        manualHumid = false;
-        manualLight = false;
-        manualBuzzer = false;
-        bot.sendMessage(CHAT_ID, "AUTO mode enabled", "");
-      }
+
+  autoMode = true;
+
+  manualFlush = false;
+  manualHumid = false;
+  manualLight = false;
+  manualBuzzer = false;
+
+  // 🔥 IMPORTANT FIX (prevents false complaint trigger)
+  lastComplaintState = digitalRead(COMPLAINT_BUTTON);
+  lastComplaintDebounce = millis();
+
+  // 🔥 Optional extra safety (recommended)
+  lastModeChangeTime = millis();
+   sendAutoMsg = true;
+
+}
       // -------- STATUS --------
       else if (text == "/status") {
         String msg = "🚽 Smart Toilet\n";
@@ -341,6 +455,8 @@ void handleTelegram() {
     numNewMessages = bot.getUpdates(bot.last_message_received + 1);
   }
 }
+
+
 void printSystemStatus(int pirState, long distance, float humidity, int gasValue, unsigned long currentMillis) {
   Serial.println("------ SYSTEM STATUS ------");
   Serial.print("PIR: ");

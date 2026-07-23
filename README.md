@@ -1,7 +1,7 @@
 # 🚽 Smart Toilet Monitoring System with Telegram Integration
-
-An IoT-based Smart Toilet Monitoring System built using **ESP32** that monitors toilet occupancy, air quality, humidity, water level, and environmental conditions. The system automatically controls connected devices and sends real-time notifications to a Telegram bot for remote monitoring.
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-db61a2?style=flat&logo=github-sponsors)](https://github.com/sponsors/santhoshh-maax)
+An IoT-based Smart Toilet Monitoring System built using **ESP32** that monitors toilet occupancy, air quality, humidity, water level, and environmental conditions. The system automatically controls connected devices and sends real-time notifications to a Telegram bot for remote monitoring.
+
 
 ---
 
